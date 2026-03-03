@@ -1,12 +1,12 @@
-from typing import Annotated
-from sqlalchemy import select
-from app.models import Link, Click
-from app.schemas import LinkCreate
-from app.database import SessionDep
+from fastapi import APIRouter, HTTPException, Form, Request
+from fastapi.responses import RedirectResponse
 from app.templates_config import templates
 from app.utils import convert_to_shortcode
-from fastapi.responses import RedirectResponse
-from fastapi import APIRouter, HTTPException, Form, Request
+from sqlalchemy import select, update
+from app.database import SessionDep
+from app.models import Link, Click
+from app.schemas import LinkCreate
+from typing import Annotated
 
 
 router = APIRouter()

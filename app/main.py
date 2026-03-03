@@ -1,15 +1,15 @@
-import os
-from app.database import engine
-from app.models import Link, Click
-from app.utils import verify_header
-from sqladmin import Admin, ModelView
-from app.templates_config import templates
-from fastapi.staticfiles import StaticFiles
-from app.routers import router, admin_router
-from fastapi import FastAPI, Depends, Request
-from sqladmin.authentication import AuthenticationBackend
-from starlette.middleware.sessions import SessionMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+from starlette.middleware.sessions import SessionMiddleware
+from sqladmin.authentication import AuthenticationBackend
+from fastapi import FastAPI, Depends, Request
+from app.routers import router, admin_router
+from fastapi.staticfiles import StaticFiles
+from app.templates_config import templates
+from sqladmin import Admin, ModelView
+from app.utils import verify_header
+from app.models import Link, Click
+from app.database import engine
+import os
 
 
 app = FastAPI()
