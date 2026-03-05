@@ -1,4 +1,5 @@
 import pytest
+import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
@@ -17,7 +18,7 @@ def anyio_backend():
     return "asyncio"
 
 
-@pytest.fixture(scope="session")
+@pytest_asyncio.fixture(scope="session")
 async def db_setup():
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -27,14 +28,14 @@ async def db_setup():
         await conn.run_sync(Base.metadata.drop_all)
 
 
-@pytest.fixture(scope="function")
+@pytest_asyncio.fixture(scope="function")
 async def client(db_setup):
     # passes as get_session
     async def get_test_session():
         async with test_session() as session:
             yield session
 
-    app.dependency_overrides[get_session] = get_test_session
+    app.dependency_overrides[get_session] = get_test_session  
 
 
     # passes as verify header for admin routes
@@ -42,7 +43,6 @@ async def client(db_setup):
         return
 
     app.dependency_overrides[verify_header] = bypass_header
-    
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
