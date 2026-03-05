@@ -13,9 +13,7 @@ router = APIRouter()
 
 @router.get("/{shortcode}")
 async def load_link(request: Request, shortcode:str, db: SessionDep):
-    if shortcode in ("admin", "statics"):
-        return RedirectResponse(url=f"/{shortcode}/")
-        
+
     results = await db.execute(select(Link).where(Link.short_code == shortcode))
     link = results.scalars().first()
     
@@ -40,8 +38,7 @@ async def load_link(request: Request, shortcode:str, db: SessionDep):
 
 @router.post("/links/")
 async def create_link(request: Request, link: Annotated[LinkCreate, Form()], db: SessionDep):
-    if not link.original_url.startswith(("http://", "https://")):
-        link.original_url = "https://" + link.original_url
+    link.original_url = str(link.original_url)
 
     results = await db.execute(select(Link).where(Link.original_url == link.original_url))
     existing = results.scalars().first()
