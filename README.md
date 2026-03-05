@@ -37,6 +37,7 @@ A fast, minimal URL shortener built with FastAPI and PostgreSQL. Paste any long 
   - [Base62 Encoding](#base62-encoding)
   - [Async SQLAlchemy](#async-sqlalchemy)
   - [Click Tracking](#click-tracking)
+- [Testing](#testing)
 - [Security](#security)
 - [What I Learned](#what-i-learned)
 - [Troubleshooting](#troubleshooting)
@@ -64,6 +65,7 @@ No bloat — just paste, shorten, share.
 - ✅ **404 handling** – Custom styled page for unknown short codes
 - ✅ **Dockerized** – App + PostgreSQL run together via docker-compose
 - ✅ **Auto migrations** – `start.sh` runs Alembic migrations on every deploy
+- ✅ **Integration tested** – Full pytest-asyncio test suite with SQLite in-memory DB
 
 ---
 
@@ -79,6 +81,7 @@ No bloat — just paste, shorten, share.
 | **Frontend** | Jinja2, custom CSS | Server-rendered templates |
 | **Containerization** | Docker, docker-compose | Consistent environments |
 | **Deployment** | Railway | Cloud hosting |
+| **Testing** | pytest, pytest-asyncio, httpx, aiosqlite | Async integration tests |
 
 ---
 
@@ -164,7 +167,7 @@ Snip/
 │   │
 │   ├── routers/
 │   │   ├── links.py         # Public routes (POST /links/, GET /{shortcode})
-│   │   └── admin.py         # Admin API routes (X-Admin-Key protected)
+│   │   └── admin.py         # Admin API routes (/api/admin/*, X-Admin-Key protected)
 │   │
 │   ├── templates/
 │   │   ├── layout.html      # Base template (nav, footer, bg elements)
@@ -175,6 +178,10 @@ Snip/
 │   └── static/              # CSS, SVG logos, favicon
 │
 ├── migrations/              # Alembic migration files
+├── tests/
+│   ├── conftest.py          # Fixtures: async SQLite DB, test client, dependency overrides
+│   ├── test_links.py        # Integration tests for public routes
+│   └── test_admin.py        # Integration tests for admin API routes
 ├── Dockerfile
 ├── docker-compose.yml
 ├── start.sh                 # Runs alembic upgrade head then starts server
@@ -198,15 +205,17 @@ Snip/
 
 | Method | Route | Description |
 |--------|-------|-------------|
-| `GET` | `/admin/links` | List all links with click counts |
-| `GET` | `/admin/links/{shortcode}/analytics` | Full click history for a link |
-| `DELETE` | `/admin/links/{id}` | Delete a link and its clicks |
+| `GET` | `/api/admin/links` | List all links with click counts |
+| `GET` | `/api/admin/links/{shortcode}/analytics/` | Full click history for a link |
+| `DELETE` | `/api/admin/links/{id}` | Delete a link and its clicks |
 
 ### Admin Dashboard
 
 | Route | Description |
 |-------|-------------|
 | `/admin/` | sqladmin UI — browse and manage Link and Click records |
+
+> **Note:** The admin JSON API uses the `/api/admin` prefix to avoid conflict with sqladmin, which mounts at `/admin` at the ASGI level and intercepts all `/admin/*` requests before FastAPI's router.
 
 ---
 
@@ -280,6 +289,60 @@ Using `UPDATE ... SET click_count = click_count + 1` is safer than read-modify-w
 
 ---
 
+## Testing
+
+The test suite uses `pytest-asyncio` with an async SQLite database (via `aiosqlite`) as a drop-in replacement for PostgreSQL. FastAPI's dependency injection system is used to swap the production session for a test session, meaning no real database is touched during tests.
+
+### Running Tests
+
+```bash
+pip install pytest pytest-asyncio httpx aiosqlite
+pytest tests/ -v
+```
+
+### Test Coverage
+
+**`tests/test_links.py`**
+
+| Test | What it verifies |
+|------|-----------------|
+| `test_create_link` | POST `/links/` returns 200 and a short link in the response |
+| `test_load_link_success` | GET `/{shortcode}` returns 302 and correct `Location` header |
+| `test_load_link_not_found` | GET `/unknown` returns 200 with the not-found template |
+| `test_create_duplicate_link` | POSTing the same URL twice returns the same short link both times |
+
+**`tests/test_admin.py`**
+
+| Test | What it verifies |
+|------|-----------------|
+| `test_admin_all_links` | GET `/api/admin/links` returns a JSON object containing a `links` key |
+| `test_get_analytics` | GET `/api/admin/links/{shortcode}/analytics/` returns click analytics |
+| `test_delete_link` | DELETE `/api/admin/links/{id}` returns `{"message": "Link deleted"}` |
+
+### How it Works
+
+```
+conftest.py
+├── test_engine       → SQLite (aiosqlite) instead of PostgreSQL
+├── db_setup          → creates all tables before tests, drops after (session-scoped)
+└── client            → AsyncClient with two dependency overrides:
+                        ├── get_session  → get_test_session (SQLite)
+                        └── verify_header → bypass_header (no auth check)
+```
+
+The `client` fixture is function-scoped so each test gets a fresh database state. The `db_setup` fixture is session-scoped so tables are only created and dropped once per test run.
+
+### Bugs Found by Tests
+
+Writing the test suite surfaced four real production bugs:
+
+1. **Missing import** — `update` was used in `load_link` but never imported from SQLAlchemy
+2. **Type mismatch** — Pydantic's `HttpUrl` object was passed directly to the DB instead of being converted to a string with `str()`
+3. **SQLite constraint difference** — `short_code` needed to be explicitly `nullable=True` in the model because SQLite enforces `NOT NULL` at flush time, while PostgreSQL defers it to commit
+4. **Route conflict** — sqladmin mounts at the ASGI level and silently intercepted all `/admin/*` requests, making the admin JSON API unreachable; resolved by moving the API to `/api/admin`
+
+---
+
 ## Security
 
 - ✅ **Admin API** – Protected by `X-Admin-Key` header verified against an env variable
@@ -305,6 +368,12 @@ Behind Railway's reverse proxy, FastAPI saw all requests as `http://` even over 
 ### Atomic Updates Prevent Race Conditions
 Early implementation loaded the link, incremented `click_count`, then saved. Under concurrent requests this loses counts. `UPDATE ... SET click_count = click_count + 1` is atomic at the database level — no lost updates.
 
+### ASGI Mounts Override FastAPI Routing
+sqladmin mounts as a Starlette sub-application at `/admin`, which intercepts requests at the ASGI level before FastAPI's router ever sees them. No amount of route ordering fixes this — the solution is to use a non-conflicting prefix for any API routes under the same path.
+
+### Dependency Injection Makes Testing Elegant
+FastAPI's `dependency_overrides` allows swapping any dependency at test time without touching production code. The entire database layer was replaced with SQLite in a few lines of `conftest.py`, and the routes had no idea.
+
 ---
 
 ## Troubleshooting
@@ -324,14 +393,13 @@ DATABASE_URL=postgresql+asyncpg://user:password@db:5432/snip_db
 ```
 
 ### Admin panel is unstyled
-Your `/{shortcode}` route is intercepting sqladmin's static file requests. Make sure the `statics` path is guarded:
-```python
-if shortcode in ("admin", "statics"):
-    return RedirectResponse(url=f"/{shortcode}/")
-```
+sqladmin's static files are served at `/admin/statics/`. If your catch-all `/{shortcode}` route is intercepting them, make sure sqladmin is mounted before the router is included in `main.py`.
 
 ### Admin login redirects back to login page
 `SessionMiddleware` is missing or `SECRET_KEY` is `None`. Verify the env variable is set and middleware is added before any routes.
+
+### Admin API returns sqladmin HTML instead of JSON
+Your admin API prefix conflicts with sqladmin's `/admin` mount. The API must use a different prefix — in this project it's `/api/admin`.
 
 ---
 
